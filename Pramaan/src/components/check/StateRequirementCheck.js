@@ -31,28 +31,31 @@ Each object in the "details" array represents a requirement and must have the fo
 - "value_or_comment": A string containing the extracted value or a brief comment explaining the status. If a value is extracted, also include the page number.
 
 State-Specific Requirements:
-- **Appraiser’s Fee Disclosure**: Required for AZ, CO, CT, GA, IL, LA, NJ, NV, NM, ND, OH, UT, VA, VT, WV.
-- **AMC License # Inclusion**: Required for GA, IL, MT, NJ, OH, VT.
-- **AMC License # and Expiration Date**: Required for IL (e.g., "558000312, Exp: 12/31/2026").
-- **AMC Fee Inclusion**: Required for NV, NM, UT.
-- **California (CA)**:
-  - Comment on smoke/CO detectors.
-  - Comment on double-strapped water heater.
-  - For properties built after 2008, a specific CO detector comment is needed.
-- **Illinois (IL)**:
-  - AMC License # must be '558000312' with expiration '12/31/2026'.
-  - Appraiser must disclose their fee.
-  - Addendum must include the "Illinois Administrative Code 1455.245" statement.
-  - Report must comment on Carbon Monoxide detector presence and include photos.
-- **Utah (UT)**:
-  - Comment on double-strapped water heaters.
-  - AMC fee must be included.
-  - Appraiser’s fee must be disclosed.
-- **Virginia (VA)**: Confirm if smoke and CO detectors are installed.
-- **Wisconsin (WI)**:
-  - A copy of the invoice must be attached.
-  - Confirm CO detector installation per Wis. Stat. Ann. § 101.647.
-- **New York (NY)**: A copy of the invoice should be included (unless the client is Plaza Home Mortgage).
+1. Appraiser’s Fee Disclosure:
+   - The appraiser’s fee must be disclosed within the body of the report for: AZ, Colorado (CO), CT, GA, IL, LA, NJ, NV, NM, ND, OH, UT, VA, VT, and WV.
+   - For all NY appraisals: Appraisers must attach a copy of the invoice to the report (unless Plaza Home Mortgage). If invoice is missing, reject as: 'Please attach a copy of the invoice to the report.'
+2. AMC License # Inclusion:
+   - The AMC License # must be included for reports in: Georgia (GA), Illinois (IL), Montana (MT), New Jersey (NJ), Ohio (OH), and Vermont (VT).
+3. AMC # and Expiration Date:
+   - Required for Illinois (IL): AMC Reg # 558.000312 Expires 12/31/2026. Reject as: 'Please include our AMC License # 558000312 and Expiration date 12/31/2026 in the report.'
+4. AMC Fee Inclusion:
+   - AMC fee to be included in all reports located in: Nevada (NV), New Mexico (NM), and Utah (UT).
+5. State-Specific Guidelines:
+   - California (CA): Appraiser must comment if smoke/CO detectors were or were not present and indicate if the hot water heater is properly double strapped (earthquake straps).
+   - Georgia (GA): After year built 2008 requires carbon monoxide detectors be installed in general sleeping areas in all new one- and two-family homes and townhomes of three stories or less.
+   - Illinois (IL):
+     1) AMC License # 558000312 and Expiration date 12/31/2026 in report.
+     2) Appraiser must disclose fee within the certification of the report. Per Illinois Administrative Code 1455.245 Scope of Property Condition Inspections by Real Estate Appraisers, required statement on all 1-4 residential units: "The comments by the licensed real estate appraiser contained within this appraisal report on the condition of the property do not address 'standards of practice' as defined in the Home Inspector License Act [225 ILCS 441] and 68 Ill. Adm. Code 1410 and are not to be considered a home inspection or home inspection report."
+     3) Comment if Carbon Monoxide detector is present and provide photos.
+   - Utah (UT):
+     1) Utah requires double strapped water heaters (For Loan Store - address if water heaters are double strapped).
+     2) AMC fee to be included in all reports located in Utah.
+     3) Appraiser’s fee must be disclosed within body of report.
+   - Virginia (VA): Confirm if smoke and CO detectors are installed.
+   - Wisconsin (WI):
+     1) Attach a copy of invoice to the report.
+     2) Wis. Stat. Ann. § 101.647 1-2 Family Dwelling Code requires CO detector on each floor and in basement if attached garage, fireplace, or fuel-burning appliance. Reject as: 'Appraiser to confirm CO detector(s) are installed.'
+   - New York (NY): Invoice copy should be included in the report (except Plaza Home Mortgage).
 `;
 
 const StateRequirementCheck = ({ onPromptSubmit, loading, response, error }) => {
@@ -97,6 +100,32 @@ const StateRequirementCheck = ({ onPromptSubmit, loading, response, error }) => 
       if (!isGreenA && isGreenB) return 1;
       return 0;
     });
+
+    const getStatusBadge = (status) => {
+      const norm = String(status || '').trim().toLowerCase();
+      if (greenStatuses.includes(norm)) {
+        return {
+          style: { backgroundColor: '#28a745', color: '#ffffff', padding: '4px 10px', borderRadius: '4px', fontWeight: 600, display: 'inline-block' },
+          hasTooltip: false
+        };
+      }
+      if (['not fulfilled', 'failed', 'fail', 'no', 'rejected'].includes(norm)) {
+        return {
+          style: { backgroundColor: '#dc3545', color: '#ffffff', padding: '4px 10px', borderRadius: '4px', fontWeight: 600, display: 'inline-block', cursor: 'pointer' },
+          hasTooltip: true
+        };
+      }
+      if (['needs review', 'review', 'warning'].includes(norm)) {
+        return {
+          style: { backgroundColor: '#ffc107', color: '#212529', padding: '4px 10px', borderRadius: '4px', fontWeight: 600, display: 'inline-block', cursor: 'pointer' },
+          hasTooltip: true
+        };
+      }
+      return {
+        style: { backgroundColor: '#6c757d', color: '#ffffff', padding: '4px 10px', borderRadius: '4px', fontWeight: 500, display: 'inline-block' },
+        hasTooltip: false
+      };
+    };
 
     return (
       <Stack spacing={3} sx={{ mt: 3 }}>
@@ -156,13 +185,10 @@ const StateRequirementCheck = ({ onPromptSubmit, loading, response, error }) => 
                 <TableBody>
                   {sortedDetails.length > 0 ? (
                     sortedDetails.map((item, index) => {
-                      const isInvalid = ['Not Applicable', 'Not Fulfilled'].includes(item.status);
-                      const statusStyle = isInvalid
-                        ? { backgroundColor: '#ff0000', color: '#ffffff', padding: '4px 8px', borderRadius: '4px', display: 'inline-block', cursor: 'pointer' }
-                        : { backgroundColor: '#91ff00ff', color: '#000000', padding: '4px 8px', borderRadius: '4px', display: 'inline-block' };
+                      const badge = getStatusBadge(item.status);
 
                       let tooltipContent = '';
-                      if (isInvalid) {
+                      if (badge.hasTooltip) {
                         if (typeof item.value_or_comment === 'object' && item.value_or_comment !== null) {
                           tooltipContent = item.value_or_comment.value || JSON.stringify(item.value_or_comment);
                         } else {
@@ -171,14 +197,14 @@ const StateRequirementCheck = ({ onPromptSubmit, loading, response, error }) => 
                       }
                       return (
                         <TableRow key={index}>
-                          <TableCell>{item.requirement}</TableCell>
+                          <TableCell sx={{ fontWeight: 500 }}>{item.requirement}</TableCell>
                           <TableCell>
-                            {isInvalid ? (
+                            {badge.hasTooltip && tooltipContent ? (
                               <Tooltip title={tooltipContent} arrow>
-                                <span style={statusStyle}>{item.status}</span>
+                                <span style={badge.style}>{item.status}</span>
                               </Tooltip>
                             ) : (
-                              <span style={statusStyle}>{item.status}</span>
+                              <span style={badge.style}>{item.status}</span>
                             )}
                           </TableCell>
                           <TableCell>
@@ -198,7 +224,7 @@ const StateRequirementCheck = ({ onPromptSubmit, loading, response, error }) => 
                             )}
                           </TableCell>
                         </TableRow>
-                      )
+                      );
                     })
                   ) : (
                     <TableRow>
