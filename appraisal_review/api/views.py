@@ -784,8 +784,8 @@ def extract_pdf(request):
                 if offline_data.get("status") == "success":
                     return _enrich_and_respond(offline_data)
             else:
-                prompt_lower = str(custom_prompt).lower()
-                if "state-specific requirements" in prompt_lower or "fee disclosure" in prompt_lower or "appraiser" in prompt_lower and "fee" in prompt_lower:
+                prompt_lower = str(custom_prompt or "").lower()
+                if any(term in prompt_lower for term in ["state-specific", "state specific", "state requirement", "state req", "fee disclosure", "amc license", "amc #", "water heater", "smoke/co", "co detector", "1455.245"]):
                     res_gemma = evaluate_state_requirements(tmp_path)
                     return Response(res_gemma)
                 elif "unpaid ok" in prompt_lower or ("unpaid" in prompt_lower and "lender" in prompt_lower):

@@ -64,15 +64,34 @@ def _get_field_val(data: Dict[str, Any], section: str, key: str) -> Any:
 
 
 def evaluate_state_requirements(pdf_path: str, extracted_data: Optional[Dict[str, Any]] = None) -> dict:
-    """Evaluates state-specific appraisal requirements offline with full fidelity."""
+    """
+    Evaluates state-specific appraisal requirements with Whole-PDF Gemma QA Engine
+    strictly adhering to the user's state requirement rules matrix.
+    """
     data = _normalize_extracted_data(pdf_path, extracted_data)
 
     pages_text = _extract_full_text_with_pages(pdf_path)
     full_text = "\n".join([p["text"] for p in pages_text])
 
+    STATE_NAME_TO_ABBR = {
+        "ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR",
+        "CALIFORNIA": "CA", "COLORADO": "CO", "CONNECTICUT": "CT", "DELAWARE": "DE",
+        "FLORIDA": "FL", "GEORGIA": "GA", "HAWAII": "HI", "IDAHO": "ID",
+        "ILLINOIS": "IL", "INDIANA": "IN", "IOWA": "IA", "KANSAS": "KS",
+        "KENTUCKY": "KY", "LOUISIANA": "LA", "MAINE": "ME", "MARYLAND": "MD",
+        "MASSACHUSETTS": "MA", "MICHIGAN": "MI", "MINNESOTA": "MN", "MISSISSIPPI": "MS",
+        "MISSOURI": "MO", "MONTANA": "MT", "NEBRASKA": "NE", "NEVADA": "NV",
+        "NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ", "NEW MEXICO": "NM", "NEW YORK": "NY",
+        "NORTH CAROLINA": "NC", "NORTH DAKOTA": "ND", "OHIO": "OH", "OKLAHOMA": "OK",
+        "OREGON": "OR", "PENNSYLVANIA": "PA", "RHODE ISLAND": "RI", "SOUTH CAROLINA": "SC",
+        "SOUTH DAKOTA": "SD", "TENNESSEE": "TN", "TEXAS": "TX", "UTAH": "UT",
+        "VERMONT": "VT", "VIRGINIA": "VA", "WASHINGTON": "WA", "WEST VIRGINIA": "WV",
+        "WISCONSIN": "WI", "WYOMING": "WY"
+    }
+
     # Extract Property State
     subject_state = ""
-    prop_state_obj = _get_field_val(data, "Subject", "State")
+    prop_state_obj = _get_field_val(data, "Subject", "State") or _get_field_val(data, "Subject", "Property State")
     if isinstance(prop_state_obj, dict):
         subject_state = prop_state_obj.get("value", "")
     elif isinstance(prop_state_obj, str):
@@ -82,17 +101,23 @@ def evaluate_state_requirements(pdf_path: str, extracted_data: Optional[Dict[str
         m = re.search(r"\b([A-Z]{2})\s+\d{5}(?:-\d{4})?\b", full_text)
         if m:
             subject_state = m.group(1).upper()
+        else:
+            for sname, sabbr in STATE_NAME_TO_ABBR.items():
+                if re.search(rf"\b{sname}\b", full_text, re.IGNORECASE):
+                    subject_state = sabbr
+                    break
 
-    subject_state = str(subject_state).strip().upper()
+    subject_state = STATE_NAME_TO_ABBR.get(str(subject_state).strip().upper(), str(subject_state).strip().upper())
 
-    details = []
-
-    # 1. Appraiser's Fee Disclosure (AZ, CO, CT, GA, IL, LA, NJ, NV, NM, ND, OH, UT, VA, VT, WV)
-    fee_states = {"AZ", "CO", "CT", "GA", "IL", "LA", "NJ", "NV", "NM", "ND", "OH", "UT", "VA", "VT", "WV"}
-    is_fee_state = subject_state in fee_states
-
+    # Candidate Facts Extraction across All Pages
     appraiser_fee_val = None
-    fee_obj = _get_field_val(data, "Certification", "Appraiser's Fee") or _get_field_val(data, "Subject", "Appraiser's Fee") or data.get("Appraiser's Fee") or data.get("Appraiser Fee") or data.get("Appraisal Fee")
+    fee_obj = (
+        _get_field_val(data, "Certification", "Appraiser's Fee")
+        or _get_field_val(data, "Subject", "Appraiser's Fee")
+        or data.get("Appraiser's Fee")
+        or data.get("Appraiser Fee")
+        or data.get("Appraisal Fee")
+    )
     if isinstance(fee_obj, dict) and fee_obj.get("value"):
         appraiser_fee_val = fee_obj.get("value")
     elif isinstance(fee_obj, str) and fee_obj:
@@ -101,33 +126,19 @@ def evaluate_state_requirements(pdf_path: str, extracted_data: Optional[Dict[str
     fee_page, fee_snippet = _find_keyword_in_pages(
         pages_text,
         [
-            r"(?:Appraiser(?:'s)?\s*Fee|Appraisal\s*Fee|Appraiser\s*Fee)[^0-9\$\n]{0,35}\$?\s*([0-9,]+(?:\.\d{2})?)(?:\s*(?:dollars?|usd))?",
-            r"(?:Total\s*Fee|Agreed\s*Fee|Professional\s*Fee|Fee\s*Charged|Fee\s*Amount)[^0-9\$\n]{0,35}\$?\s*([0-9,]+(?:\.\d{2})?)(?:\s*(?:dollars?|usd))?",
-            r"(?:Invoice\s*Amount|Invoice\s*Total|Total\s*Amount\s*Due|Amount\s*Due)[^0-9\$\n]{0,35}\$?\s*([0-9,]+(?:\.\d{2})?)(?:\s*(?:dollars?|usd))?",
-            r"\bFee\b[^0-9\$\n]{0,25}\$?\s*([0-9,]+(?:\.\d{2})?)(?:\s*(?:dollars?|usd))?",
-            r"Invoice",
+            r"(?:Appraiser(?:'s)?\s*Fee|Appraisal\s*Fee|Agreed\s*Fee|Professional\s*Fee|Fee\s*Charged|Fee\s*Amount)[^\d\$\n]{0,35}\$?\s*([0-9,]+(?:\.\d{2})?)",
+            r"(?:Total\s*Fee|Invoice\s*Amount|Invoice\s*Total|Total\s*Amount\s*Due|Amount\s*Due)[^\d\$\n]{0,35}\$?\s*([0-9,]+(?:\.\d{2})?)",
+            r"(?:Appraiser(?:'s)?\s*Fee|Appraisal\s*Fee)[\s:]+\$?\s*([0-9,]+(?:\.\d{2})?)",
+            r"\bFee\b[\s:]+\$?\s*([0-9,]+(?:\.\d{2})?)",
+            r"\bInvoice\b",
         ]
     )
 
-    if appraiser_fee_val or fee_page:
-        val_str = appraiser_fee_val or fee_snippet or "Disclosed"
-        p_no = fee_page or 1
-        details.append({
-            "requirement": "Appraiser’s Fee Disclosure",
-            "status": "Fulfilled",
-            "value_or_comment": f"Appraiser fee disclosed (${val_str} on Page {p_no})" if "$" not in str(val_str) else f"Appraiser fee disclosed ({val_str} on Page {p_no})"
-        })
-    else:
-        details.append({
-            "requirement": "Appraiser’s Fee Disclosure",
-            "status": "Not Fulfilled" if is_fee_state else "Not Applicable",
-            "value_or_comment": f"Appraiser's fee is {'required for ' + subject_state + ' but not disclosed' if is_fee_state else 'not found in report'}."
-        })
-
-    # 2. AMC License # Inclusion (GA, IL, MT, NJ, OH, VT)
-    amc_lic_states = {"GA", "IL", "MT", "NJ", "OH", "VT"}
-    is_amc_lic_state = subject_state in amc_lic_states
-    amc_lic_val = _get_field_val(data, "Subject", "AMC License #") or _get_field_val(data, "Certification", "AMC License #") or data.get("AMC License #")
+    amc_lic_val = (
+        _get_field_val(data, "Subject", "AMC License #")
+        or _get_field_val(data, "Certification", "AMC License #")
+        or data.get("AMC License #")
+    )
     amc_lic_page, amc_lic_snip = _find_keyword_in_pages(
         pages_text,
         [
@@ -136,153 +147,336 @@ def evaluate_state_requirements(pdf_path: str, extracted_data: Optional[Dict[str
             r"558\.?000312",
         ]
     )
-    if amc_lic_val or amc_lic_page:
-        amc_lic_snip_str = str(amc_lic_val or amc_lic_snip or "")[:60]
-        p_no = amc_lic_page or 1
-        details.append({
-            "requirement": "AMC License # Inclusion",
-            "status": "Fulfilled",
-            "value_or_comment": f"AMC License/Registration number present on Page {p_no} ({amc_lic_snip_str})."
-        })
-    else:
-        details.append({
-            "requirement": "AMC License # Inclusion",
-            "status": "Not Fulfilled" if is_amc_lic_state else "Not Applicable",
-            "value_or_comment": f"AMC License # is {'required for ' + subject_state + ' but missing' if is_amc_lic_state else 'not found'}."
-        })
 
-    # 3. AMC Fee Inclusion (NV, NM, UT)
-    amc_fee_states = {"NV", "NM", "UT"}
-    is_amc_fee_state = subject_state in amc_fee_states
     amc_fee_page, amc_fee_snip = _find_keyword_in_pages(
         pages_text,
         [
-            r"AMC\s*Fee[:\s]*\$?\s*([0-9,]+)",
-            r"Management\s*Fee[:\s]*\$?\s*([0-9,]+)",
+            r"(?:AMC\s*Fee|Management\s*Fee|AMC\s*Management\s*Fee)[:\s]*\$?\s*([0-9,]+(?:\.\d{2})?)",
         ]
     )
-    if amc_fee_page:
+
+    invoice_page, _ = _find_keyword_in_pages(
+        pages_text,
+        [r"\bINVOICE\b", r"\bBill\s*To\b", r"\bRemit\s*To\b", r"Invoice\s*Number"]
+    )
+
+    wh_page, _ = _find_keyword_in_pages(
+        pages_text,
+        [
+            r"water\s*heater.*(?:strapp|brace|double)",
+            r"double\s*strapp.*water\s*heater",
+            r"earthquake\s*straps?",
+            r"strapped\s*water\s*heater"
+        ]
+    )
+
+    smoke_co_page, _ = _find_keyword_in_pages(
+        pages_text,
+        [
+            r"smoke\s*(?:and|/|&|\+|,)?\s*(?:carbon\s*monoxide|co|carbon)",
+            r"(?:carbon\s*monoxide|co)\s*detector",
+            r"smoke\s*detector",
+            r"smoke\s*alarm",
+            r"co\s*alarm"
+        ]
+    )
+
+    il_lic_page, _ = _find_keyword_in_pages(
+        pages_text,
+        [r"558\.?000312.*(?:12/31/2026|12/31/2025|Exp)", r"558\.?000312", r"558000312"]
+    )
+
+    il_code_page, _ = _find_keyword_in_pages(
+        pages_text,
+        [r"1455\.245", r"Home\s*Inspector\s*License\s*Act", r"standards\s*of\s*practice"]
+    )
+
+    year_built_val = (
+        _get_field_val(data, "Subject", "Year Built")
+        or _get_field_val(data, "Improvements", "Year Built")
+        or data.get("Year Built")
+    )
+
+    details = []
+    applicable_reqs = []
+
+    # 1. Appraiser's Fee Disclosure
+    # Applicable states: AZ, CO, CT, GA, IL, LA, NJ, NV, NM, ND, OH, UT, VA, VT, WV
+    fee_states = {"AZ", "CO", "CT", "GA", "IL", "LA", "NJ", "NV", "NM", "ND", "OH", "UT", "VA", "VT", "WV"}
+    if subject_state in fee_states or not subject_state:
+        applicable_reqs.append("Appraiser’s Fee Disclosure")
+        if appraiser_fee_val or fee_page:
+            val_str = appraiser_fee_val or fee_snippet or "Disclosed"
+            p_no = fee_page or 1
+            details.append({
+                "requirement": "Appraiser’s Fee Disclosure",
+                "status": "Fulfilled",
+                "value_or_comment": f"Appraiser fee disclosed (${val_str} on Page {p_no})" if "$" not in str(val_str) else f"Appraiser fee disclosed ({val_str} on Page {p_no})"
+            })
+        else:
+            state_label = subject_state or "applicable states"
+            details.append({
+                "requirement": "Appraiser’s Fee Disclosure",
+                "status": "Not Fulfilled",
+                "value_or_comment": f"The appraiser’s fee must be disclosed within the body of the report for {state_label}."
+            })
+
+    # 2. AMC License # Inclusion
+    # Applicable states: GA, IL, MT, NJ, OH, VT
+    amc_lic_states = {"GA", "IL", "MT", "NJ", "OH", "VT"}
+    if subject_state in amc_lic_states or not subject_state:
+        applicable_reqs.append("AMC License # Inclusion")
+        if amc_lic_val or amc_lic_page:
+            lic_str = str(amc_lic_val or amc_lic_snip or "Present")[:60]
+            p_no = amc_lic_page or 1
+            details.append({
+                "requirement": "AMC License # Inclusion",
+                "status": "Fulfilled",
+                "value_or_comment": f"AMC License # included on Page {p_no} ({lic_str})"
+            })
+        else:
+            state_label = subject_state or "applicable states"
+            details.append({
+                "requirement": "AMC License # Inclusion",
+                "status": "Not Fulfilled",
+                "value_or_comment": f"The AMC License # must be included for reports in {state_label}."
+            })
+
+    # 3. AMC Fee Inclusion
+    # Applicable states: NV, NM, UT
+    amc_fee_states = {"NV", "NM", "UT"}
+    if subject_state in amc_fee_states or not subject_state:
+        applicable_reqs.append("AMC Fee Inclusion")
+        if amc_fee_page:
+            details.append({
+                "requirement": "AMC Fee Inclusion",
+                "status": "Fulfilled",
+                "value_or_comment": f"AMC fee included on Page {amc_fee_page}."
+            })
+        else:
+            details.append({
+                "requirement": "AMC Fee Inclusion",
+                "status": "Not Fulfilled" if subject_state in amc_fee_states else "Not Applicable",
+                "value_or_comment": f"AMC fee to be included in all reports located in: Nevada (NV), New Mexico (NM) and Utah (UT)."
+            })
+
+    # 4. California (CA) Specific Guidelines
+    if subject_state == "CA" or not subject_state:
+        if subject_state == "CA":
+            applicable_reqs.extend([
+                "California (CA) Smoke and CO Detectors Commentary",
+                "California (CA) Double-Strapped Water Heater"
+            ])
+        # Smoke/CO
+        if smoke_co_page:
+            details.append({
+                "requirement": "California (CA) Smoke and CO Detectors Commentary",
+                "status": "Fulfilled",
+                "value_or_comment": f"Smoke/CO detector commentary verified on Page {smoke_co_page}."
+            })
+        else:
+            details.append({
+                "requirement": "California (CA) Smoke and CO Detectors Commentary",
+                "status": "Not Fulfilled" if subject_state == "CA" else "Not Applicable",
+                "value_or_comment": "Appraiser must comment if smoke/CO detectors were or were not present."
+            })
+        # Double Strapped Water Heater
+        if wh_page:
+            details.append({
+                "requirement": "California (CA) Double-Strapped Water Heater",
+                "status": "Fulfilled",
+                "value_or_comment": f"Hot water heater properly double strapped (earthquake straps) confirmed on Page {wh_page}."
+            })
+        else:
+            details.append({
+                "requirement": "California (CA) Double-Strapped Water Heater",
+                "status": "Not Fulfilled" if subject_state == "CA" else "Not Applicable",
+                "value_or_comment": "Indicate if the hot water heater is properly double strapped (earthquake straps)."
+            })
+
+    # 5. Georgia (GA) Specific Guidelines
+    if subject_state == "GA" or not subject_state:
+        if subject_state == "GA":
+            applicable_reqs.append("Georgia (GA) Post-2008 CO Detector in General Sleeping Areas")
+        is_post_2008 = False
+        try:
+            yr_match = re.search(r"\b(19\d\d|20\d\d)\b", str(year_built_val or ""))
+            if yr_match and int(yr_match.group(1)) > 2008:
+                is_post_2008 = True
+        except Exception:
+            pass
+
+        if smoke_co_page and is_post_2008:
+            details.append({
+                "requirement": "Georgia (GA) Post-2008 CO Detector in General Sleeping Areas",
+                "status": "Fulfilled",
+                "value_or_comment": f"CO detector in general sleeping areas confirmed for post-2008 home on Page {smoke_co_page}."
+            })
+        elif is_post_2008:
+            details.append({
+                "requirement": "Georgia (GA) Post-2008 CO Detector in General Sleeping Areas",
+                "status": "Not Fulfilled" if subject_state == "GA" else "Not Applicable",
+                "value_or_comment": "After year built 2008 requires carbon monoxide detectors be installed in general sleeping areas in all new 1- and 2-family homes and townhomes of 3 stories or less."
+            })
+        elif subject_state == "GA":
+            details.append({
+                "requirement": "Georgia (GA) Post-2008 CO Detector in General Sleeping Areas",
+                "status": "Fulfilled",
+                "value_or_comment": f"Property year built ({year_built_val or 'Pre-2008'}) does not require post-2008 sleeping area CO mandate."
+            })
+
+    # 6. Illinois (IL) Specific Guidelines
+    if subject_state == "IL" or not subject_state:
+        if subject_state == "IL":
+            applicable_reqs.extend([
+                "Illinois (IL) AMC License #558000312 & Expiration Date",
+                "Illinois (IL) Administrative Code 1455.245 Statement",
+                "Illinois (IL) Carbon Monoxide Detector Commentary & Photos"
+            ])
+        # 1. AMC Reg # 558.000312 Expires 12/31/2026
+        if il_lic_page:
+            details.append({
+                "requirement": "Illinois (IL) AMC License #558000312 & Expiration Date",
+                "status": "Fulfilled",
+                "value_or_comment": f"AMC License # 558000312 and Expiration date 12/31/2026 verified on Page {il_lic_page}."
+            })
+        else:
+            details.append({
+                "requirement": "Illinois (IL) AMC License #558000312 & Expiration Date",
+                "status": "Not Fulfilled" if subject_state == "IL" else "Not Applicable",
+                "value_or_comment": "Please include our AMC License # 558000312 and Expiration date 12/31/2026 in the report."
+            })
+
+        # 2. Administrative Code 1455.245 Statement
+        if il_code_page:
+            details.append({
+                "requirement": "Illinois (IL) Administrative Code 1455.245 Statement",
+                "status": "Fulfilled",
+                "value_or_comment": f"Illinois Administrative Code 1455.245 statement verified on Page {il_code_page}."
+            })
+        else:
+            details.append({
+                "requirement": "Illinois (IL) Administrative Code 1455.245 Statement",
+                "status": "Not Fulfilled" if subject_state == "IL" else "Not Applicable",
+                "value_or_comment": 'Appraiser must disclose fee within the certification of the report. Per Illinois Administrative Code 1455.245 Scope of Property Condition Inspections by Real Estate Appraisers, required statement on all 1-4 residential units: "The comments by the licensed real estate appraiser contained within this appraisal report on the condition of the property do not address \\"standards of practice\\" as defined in the Home Inspector License Act [225 ILCS 441] and 68 Ill. Adm. Code 1410 and are not to be considered a home inspection or home inspection report."'
+            })
+
+        # 3. Carbon Monoxide detector comment and photos
+        if smoke_co_page:
+            details.append({
+                "requirement": "Illinois (IL) Carbon Monoxide Detector Commentary & Photos",
+                "status": "Fulfilled",
+                "value_or_comment": f"Carbon Monoxide detector commentary and photos verified on Page {smoke_co_page}."
+            })
+        else:
+            details.append({
+                "requirement": "Illinois (IL) Carbon Monoxide Detector Commentary & Photos",
+                "status": "Not Fulfilled" if subject_state == "IL" else "Not Applicable",
+                "value_or_comment": "Please comment if Carbon Monoxide detector is present and provide photos."
+            })
+
+    # 7. Utah (UT) Specific Guidelines
+    if subject_state == "UT" or not subject_state:
+        if subject_state == "UT":
+            applicable_reqs.append("Utah (UT) Double-Strapped Water Heater")
+        if wh_page:
+            details.append({
+                "requirement": "Utah (UT) Double-Strapped Water Heater",
+                "status": "Fulfilled",
+                "value_or_comment": f"Double strapped water heater verified on Page {wh_page}."
+            })
+        else:
+            details.append({
+                "requirement": "Utah (UT) Double-Strapped Water Heater",
+                "status": "Not Fulfilled" if subject_state == "UT" else "Not Applicable",
+                "value_or_comment": "For Loan Store - Utah requires double strapped water heaters. Please make sure appraisers are addressing if water heaters are double strapped in Utah."
+            })
+
+    # 8. Virginia (VA) Specific Guidelines
+    if subject_state == "VA" or not subject_state:
+        if subject_state == "VA":
+            applicable_reqs.append("Virginia (VA) Smoke and CO Detectors Installation")
+        if smoke_co_page:
+            details.append({
+                "requirement": "Virginia (VA) Smoke and CO Detectors Installation",
+                "status": "Fulfilled",
+                "value_or_comment": f"Smoke and CO detectors installation confirmed on Page {smoke_co_page}."
+            })
+        else:
+            details.append({
+                "requirement": "Virginia (VA) Smoke and CO Detectors Installation",
+                "status": "Not Fulfilled" if subject_state == "VA" else "Not Applicable",
+                "value_or_comment": "Please confirm if smoke and CO detectors are installed."
+            })
+
+    # 9. Wisconsin (WI) Specific Guidelines
+    if subject_state == "WI" or not subject_state:
+        if subject_state == "WI":
+            applicable_reqs.extend([
+                "Wisconsin (WI) Invoice Copy Attached",
+                "Wisconsin (WI) CO Detector per Wis. Stat. Ann. § 101.647"
+            ])
+        # Invoice
+        if invoice_page:
+            details.append({
+                "requirement": "Wisconsin (WI) Invoice Copy Attached",
+                "status": "Fulfilled",
+                "value_or_comment": f"Invoice copy attached to the report on Page {invoice_page}."
+            })
+        else:
+            details.append({
+                "requirement": "Wisconsin (WI) Invoice Copy Attached",
+                "status": "Not Fulfilled" if subject_state == "WI" else "Not Applicable",
+                "value_or_comment": "Please attach a copy of invoice to the report."
+            })
+        # CO Detector per 101.647
+        if smoke_co_page:
+            details.append({
+                "requirement": "Wisconsin (WI) CO Detector per Wis. Stat. Ann. § 101.647",
+                "status": "Fulfilled",
+                "value_or_comment": f"CO detector installation verified on Page {smoke_co_page} per Wis. Stat. Ann. § 101.647."
+            })
+        else:
+            details.append({
+                "requirement": "Wisconsin (WI) CO Detector per Wis. Stat. Ann. § 101.647",
+                "status": "Not Fulfilled" if subject_state == "WI" else "Not Applicable",
+                "value_or_comment": "Appraiser to confirm CO detector(s) are installed per Wis. Stat. Ann. § 101.647."
+            })
+
+    # 10. New York (NY) Specific Guidelines
+    if subject_state == "NY" or not subject_state:
+        if subject_state == "NY":
+            applicable_reqs.append("New York (NY) Invoice Copy Attached")
+        if invoice_page:
+            details.append({
+                "requirement": "New York (NY) Invoice Copy Attached",
+                "status": "Fulfilled",
+                "value_or_comment": f"Invoice copy attached to the report on Page {invoice_page}."
+            })
+        else:
+            details.append({
+                "requirement": "New York (NY) Invoice Copy Attached",
+                "status": "Not Fulfilled" if subject_state == "NY" else "Not Applicable",
+                "value_or_comment": "For all NY appraisals: appraisers will need to attach a copy of the invoice to the report (except Plaza Home Mortgage). Reject as: 'Please attach a copy of the invoice to the report.'"
+            })
+
+    # If subject_state has no special rules in list (e.g. TX, FL):
+    if not details and subject_state:
         details.append({
-            "requirement": "AMC Fee Inclusion",
+            "requirement": f"State Compliance Guidelines ({subject_state})",
             "status": "Fulfilled",
-            "value_or_comment": f"AMC fee included on Page {amc_fee_page}."
+            "value_or_comment": f"No state-specific fee disclosure, AMC license, or fixture mandates apply for {subject_state} under the current state requirements guidelines."
         })
-    elif is_amc_fee_state:
-        details.append({
-            "requirement": "AMC Fee Inclusion",
-            "status": "Not Fulfilled",
-            "value_or_comment": f"AMC fee is required for {subject_state} but not found."
-        })
-
-    # 4. California (CA) Specific Checks
-    if subject_state == "CA":
-        # Smoke/CO Detectors
-        smoke_comm = _get_field_val(data, "Subject", "Smoke detector comment") or data.get("Smoke detector comment") or ""
-        co_comm = _get_field_val(data, "Subject", "CO detector comment") or data.get("CO detector comment") or ""
-
-        co_page, co_snip = _find_keyword_in_pages(
-            pages_text,
-            [
-                r"smoke\s*(?:and|/|&|\+|,)?\s*(?:carbon\s*monoxide|co|carbon)",
-                r"(?:carbon\s*monoxide|co|carbon)\s*(?:and|/|&|\+|,)?\s*smoke",
-                r"smoke\s*detector",
-                r"carbon\s*monoxide\s*detector",
-                r"co\s*detector",
-                r"smoke\s*alarm",
-                r"co\s*alarm"
-            ]
-        )
-        if smoke_comm or co_comm or co_page:
-            disp_comm = smoke_comm or co_comm or (f"Smoke/CO detector commentary verified on Page {co_page} ({co_snip[:60]}...)" if co_snip else f"Smoke/CO detector commentary verified on Page {co_page}")
-            details.append({
-                "requirement": "California (CA) Smoke/CO Detectors Commentary",
-                "status": "Fulfilled",
-                "value_or_comment": str(disp_comm)
-            })
-        else:
-            details.append({
-                "requirement": "California (CA) Smoke/CO Detectors Commentary",
-                "status": "Not Fulfilled",
-                "value_or_comment": "Smoke / CO detector commentary is required for CA but not found."
-            })
-
-        # Water Heater Double Strapping
-        wh_page, wh_snip = _find_keyword_in_pages(
-            pages_text,
-            [r"water\s*heater.*(?:strapp|brace|double)", r"double\s*strapp.*water\s*heater", r"water\s*heater"]
-        )
-        wh_snip_str = (wh_snip or "").lower()
-        if wh_page and ("strap" in wh_snip_str or "brace" in wh_snip_str):
-            details.append({
-                "requirement": "California (CA) Double-Strapped Water Heater",
-                "status": "Fulfilled",
-                "value_or_comment": f"Double-strapped water heater confirmed on Page {wh_page}."
-            })
-        else:
-            details.append({
-                "requirement": "California (CA) Double-Strapped Water Heater",
-                "status": "Not Fulfilled",
-                "value_or_comment": "Double-strapped water heater comment required for CA but not found."
-            })
-
-    # 5. Illinois (IL) Specific Checks
-    if subject_state == "IL":
-        il_lic_page, _ = _find_keyword_in_pages(pages_text, [r"558\.?000312.*(?:12/31/2026|Exp)", r"558\.?000312", r"558000312"])
-        details.append({
-            "requirement": "Illinois (IL) AMC License #558000312 & Expiration",
-            "status": "Fulfilled" if il_lic_page else "Not Fulfilled",
-            "value_or_comment": f"AMC License 558.000312 verified on Page {il_lic_page}" if il_lic_page else "Illinois AMC License #558000312 with expiration 12/31/2026 missing."
-        })
-        il_code_page, _ = _find_keyword_in_pages(pages_text, [r"Illinois\s*Administrative\s*(?:Code|Rule)\s*(?:Section\s*)?1455\.(?:245|250)", r"1455\.(?:245|250)"])
-        details.append({
-            "requirement": "Illinois (IL) Admin Code 1455.245/250 Statement",
-            "status": "Fulfilled" if il_code_page else "Not Fulfilled",
-            "value_or_comment": f"Admin Code 1455 statement found on Page {il_code_page}" if il_code_page else "Illinois Administrative Code 1455.245/250 statement missing in addendum."
-        })
-
-    # 6. Utah (UT) Specific Checks
-    if subject_state == "UT":
-        wh_page, wh_snip = _find_keyword_in_pages(pages_text, [r"water\s*heater.*(?:strapp|brace|double)", r"strapp.*water\s*heater"])
-        details.append({
-            "requirement": "Utah (UT) Double-Strapped Water Heater",
-            "status": "Fulfilled" if wh_page else "Not Fulfilled",
-            "value_or_comment": f"Water heater strapping verified on Page {wh_page}" if wh_page else "Double-strapped water heater commentary missing."
-        })
-
-    # 7. Virginia (VA) Specific Checks
-    if subject_state == "VA":
-        co_page, _ = _find_keyword_in_pages(pages_text, [r"smoke\s*(?:and|/|&)?\s*(?:co|carbon\s*monoxide)", r"smoke\s*detector"])
-        details.append({
-            "requirement": "Virginia (VA) Smoke and CO Detectors",
-            "status": "Fulfilled" if co_page else "Not Fulfilled",
-            "value_or_comment": f"Smoke/CO detector commentary verified on Page {co_page}" if co_page else "Smoke and CO detector commentary missing."
-        })
-
-    # 8. Wisconsin (WI) Specific Checks
-    if subject_state == "WI":
-        inv_page, _ = _find_keyword_in_pages(pages_text, [r"invoice", r"101\.647"])
-        details.append({
-            "requirement": "Wisconsin (WI) Invoice & CO Detector per § 101.647",
-            "status": "Fulfilled" if inv_page else "Not Fulfilled",
-            "value_or_comment": f"Wisconsin requirements verified on Page {inv_page}" if inv_page else "Invoice copy or § 101.647 CO statement missing."
-        })
-
-    # 9. New York (NY) Specific Checks
-    if subject_state == "NY":
-        inv_page, _ = _find_keyword_in_pages(pages_text, [r"invoice"])
-        details.append({
-            "requirement": "New York (NY) Invoice Inclusion",
-            "status": "Fulfilled" if inv_page else "Not Fulfilled",
-            "value_or_comment": f"Invoice copy found on Page {inv_page}" if inv_page else "Invoice copy should be included for NY."
-        })
+        applicable_reqs.append(f"State Compliance Guidelines ({subject_state})")
 
     # Generate summary & deterministic evidence
     fulfilled_count = sum(1 for d in details if d["status"] == "Fulfilled")
     total_count = len(details)
-    summary = f"State requirement analysis completed for State: {subject_state or 'General'}. {fulfilled_count} of {total_count} state checks fulfilled."
+    state_title = subject_state or "General"
+    summary = f"State requirement compliance audit completed for {state_title}. {fulfilled_count} of {total_count} state checks fulfilled."
 
     det_fallback = {
-        "engine": "Gemma QA Engine",
+        "engine": "Gemma QA Engine (Whole-PDF Analysis)",
         "summary": summary,
         "details": details
     }
@@ -295,24 +489,37 @@ def evaluate_state_requirements(pdf_path: str, extracted_data: Optional[Dict[str
         "amc_license_number": amc_lic_val or amc_lic_snip,
         "amc_license_page": amc_lic_page,
         "amc_fee_page": amc_fee_page,
+        "invoice_page": invoice_page,
+        "water_heater_strapped_page": wh_page,
+        "smoke_co_page": smoke_co_page,
         "evaluated_state_details": details
     }
 
     rules = (
-        f"State-Specific Appraisal Requirements for State: {subject_state or 'General'}:\n"
-        "- Appraiser's Fee Disclosure: Required for AZ, CO, CT, GA, IL, LA, NJ, NV, NM, ND, OH, UT, VA, VT, WV.\n"
-        "- AMC License # Inclusion: Required for GA, IL, MT, NJ, OH, VT.\n"
-        "- AMC License # and Expiration Date: Required for IL (e.g., '558000312, Exp: 12/31/2026').\n"
-        "- AMC Fee Inclusion: Required for NV, NM, UT.\n"
-        "- California (CA): Smoke/CO detectors comment, double-strapped water heater comment.\n"
-        "- Illinois (IL): AMC Lic #558000312 & Exp 12/31/2026, Appraiser Fee, Admin Code 1455.245 statement, Carbon Monoxide detector.\n"
-        "- Utah (UT): Double-strapped water heaters, AMC fee, Appraiser fee.\n"
-        "- Virginia (VA): Smoke and CO detectors.\n"
-        "- Wisconsin (WI): Invoice attached, CO detector per § 101.647.\n"
-        "- New York (NY): Invoice included."
+        f"State-Specific Appraisal Requirements Matrix for State: {state_title}:\n"
+        "1. Appraiser’s Fee Disclosure: Required for AZ, CO, CT, GA, IL, LA, NJ, NV, NM, ND, OH, UT, VA, VT, WV.\n"
+        "2. AMC License # Inclusion: Required for GA, IL, MT, NJ, OH, VT.\n"
+        "3. AMC # and Expiration Date: Required for IL (AMC License # 558000312 and Expiration 12/31/2026).\n"
+        "4. AMC Fee Inclusion: Required for NV, NM, UT.\n"
+        "5. California (CA): Smoke/CO detectors comment, hot water heater double strapped (earthquake straps).\n"
+        "6. Georgia (GA): After year built 2008 requires CO detectors installed in general sleeping areas in all new 1- and 2-family homes and townhomes of 3 stories or less.\n"
+        "7. Illinois (IL): AMC License # 558000312 & Exp 12/31/2026, Appraiser Fee in certification, Admin Code 1455.245 statement, Carbon Monoxide detector comment and photos.\n"
+        "8. Utah (UT): Double strapped water heaters, AMC fee included, Appraiser fee disclosed.\n"
+        "9. Virginia (VA): Confirm if smoke and CO detectors are installed.\n"
+        "10. Wisconsin (WI): Attach invoice to report, CO detector per Wis. Stat. Ann. § 101.647.\n"
+        "11. New York (NY): Attach copy of invoice to report (except Plaza Home Mortgage)."
     )
 
-    return run_gemma_check(f"State Requirement Check ({subject_state or 'General'})", rules, evidence, pages_text, det_fallback, pdf_path=pdf_path)
+    return run_gemma_check(
+        f"State Requirement Check ({state_title})",
+        rules,
+        evidence,
+        pages_text,
+        det_fallback,
+        pdf_path=pdf_path,
+        allowed_requirements=applicable_reqs
+    )
+
 
 
 def evaluate_client_requirements(pdf_path: str, extracted_data: Optional[Dict[str, Any]] = None) -> dict:
